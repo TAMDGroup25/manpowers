@@ -115,6 +115,11 @@ const Comercial: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState(false);
+  const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null);
+  const [orderPendingDelete, setOrderPendingDelete] = useState<Order | null>(
+    null,
+  );
+  const [deleteModalError, setDeleteModalError] = useState("");
   const [expandedOrders, setExpandedOrders] = useState<{
     [key: string]: boolean;
   }>({});
@@ -576,6 +581,7 @@ const Comercial: React.FC = () => {
     return activeMonthOrders.filter((o) => {
       const customer = o.customer || ({} as CustomerData);
       const haystack = [
+        getOrderPrintId(o),
         customer.name,
         o.agent,
         customer.company,
@@ -587,7 +593,13 @@ const Comercial: React.FC = () => {
         .join(" ");
       return normalizeSearchText(haystack).includes(q);
     });
-  }, [activeMonthOrders, adminOrdersSearch, isAdmin, normalizeSearchText]);
+  }, [
+    activeMonthOrders,
+    adminOrdersSearch,
+    getOrderPrintId,
+    isAdmin,
+    normalizeSearchText,
+  ]);
 
   const monthSummaries = useMemo(() => {
     const result = new Map<string, { count: number; total: number }>();
@@ -795,6 +807,86 @@ const Comercial: React.FC = () => {
       setIsLoadingOrders(false);
     }
   }, [isAdmin, username]);
+
+  const openDeleteOrderModal = useCallback(
+    (order: Order) => {
+      if (!isAdmin) return;
+      if (!order.filename && !order.agent) {
+        setDeleteModalError(
+          "No se puede eliminar este pedido (falta el comercial/archivo asociado).",
+        );
+        setOrderPendingDelete(order);
+        return;
+      }
+      setDeleteModalError("");
+      setOrderPendingDelete(order);
+    },
+    [isAdmin],
+  );
+
+  const closeDeleteOrderModal = useCallback(() => {
+    if (deletingOrderKey) return;
+    setDeleteModalError("");
+    setOrderPendingDelete(null);
+  }, [deletingOrderKey]);
+
+  const handleDeleteOrder = useCallback(
+    async (order: Order) => {
+      if (!isAdmin) return;
+      const orderKey = getOrderKey(order);
+      const orderIdentityKey = [
+        order.date || "",
+        order.agent || "",
+        order.customer?.email || "",
+        order.customer?.phone || "",
+        String(order.total ?? ""),
+      ].join("|");
+
+      setDeletingOrderKey(orderKey);
+      setDeleteModalError("");
+      try {
+        const response = await fetch("/backend/delete_order.php", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: order.filename,
+            agent: order.agent,
+            order_key: orderIdentityKey,
+          }),
+        });
+
+        if (!response.ok) {
+          let msg = "No se pudo eliminar el pedido.";
+          try {
+            const data = (await response.json()) as { error?: string };
+            if (data?.error) msg = data.error;
+          } catch {
+            void 0;
+          }
+          setDeleteModalError(msg);
+          return;
+        }
+
+        setOrders((prev) => prev.filter((o) => getOrderKey(o) !== orderKey));
+        setExpandedOrders((prev) => {
+          if (!prev[orderKey]) return prev;
+          const next = { ...prev };
+          delete next[orderKey];
+          return next;
+        });
+        setOrderPendingDelete(null);
+        setDeleteModalError("");
+      } catch (err) {
+        console.error("Error deleting order:", err);
+        setDeleteModalError(
+          "Error de conexión al intentar eliminar el pedido.",
+        );
+      } finally {
+        setDeletingOrderKey(null);
+      }
+    },
+    [getOrderKey, isAdmin],
+  );
 
   useEffect(() => {
     if (view === "orders" && isLoggedIn) {
@@ -1673,7 +1765,7 @@ const Comercial: React.FC = () => {
                     <input
                       type="text"
                       className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black placeholder-black/40 focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
-                      placeholder="Cliente, comercial, empresa, CIF, email o dirección..."
+                      placeholder="Cliente, comercial, nº pedido, empresa, CIF, email o dirección..."
                       value={adminOrdersSearch}
                       onChange={(e) => setAdminOrdersSearch(e.target.value)}
                     />
@@ -1947,6 +2039,27 @@ const Comercial: React.FC = () => {
                               </div>
 
                               <div className="mt-4 flex justify-end gap-2 flex-wrap">
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openDeleteOrderModal(order)}
+                                    disabled={
+                                      deletingOrderKey === orderKey ||
+                                      (!order.filename && !order.agent)
+                                    }
+                                    title={
+                                      !order.filename && !order.agent
+                                        ? "No se puede eliminar este pedido (falta comercial/archivo asociado)"
+                                        : "Eliminar pedido"
+                                    }
+                                    className="text-xs md:text-sm px-4 py-2 rounded-lg border border-red-600/30 text-red-700 hover:bg-red-600/10 transition-colors inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <Trash2 size={16} />
+                                    {deletingOrderKey === orderKey
+                                      ? "Eliminando..."
+                                      : "Eliminar"}
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2345,11 +2458,7 @@ const Comercial: React.FC = () => {
                             </div>
                           </div>
                           <div className="text-[var(--color-secondary)] font-bold whitespace-nowrap">
-                            {(
-                              getEffectivePrice(p) *
-                              p.quantity
-                            ).toFixed(2)}{" "}
-                            €
+                            {(getEffectivePrice(p) * p.quantity).toFixed(2)} €
                           </div>
                         </div>
                       ))}
@@ -2546,10 +2655,7 @@ const Comercial: React.FC = () => {
                             </div>
                             <div className="flex flex-col items-end gap-1">
                               <span className="text-[var(--color-secondary)] font-bold">
-                                {(
-                                  getEffectivePrice(p) *
-                                  p.quantity
-                                ).toFixed(2)}{" "}
+                                {(getEffectivePrice(p) * p.quantity).toFixed(2)}{" "}
                                 €
                               </span>
                               <button
@@ -2580,9 +2686,7 @@ const Comercial: React.FC = () => {
                         </span>
                       </div>
                       <div className="flex justify-between items-center text-xl">
-                        <span className="text-black font-bold">
-                          Total
-                        </span>
+                        <span className="text-black font-bold">Total</span>
                         <span className="text-[var(--color-secondary)] font-bold">
                           {calculateFinalTotal().toFixed(2)} €
                         </span>
@@ -2635,11 +2739,7 @@ const Comercial: React.FC = () => {
                             </div>
                           </div>
                           <div className="text-[var(--color-secondary)] font-bold whitespace-nowrap">
-                            {(
-                              getEffectivePrice(p) *
-                              p.quantity
-                            ).toFixed(2)}{" "}
-                            €
+                            {(getEffectivePrice(p) * p.quantity).toFixed(2)} €
                           </div>
                         </div>
                       ))
@@ -2691,6 +2791,128 @@ const Comercial: React.FC = () => {
                 onClick={() => setShowOrderSummary(false)}
               />
             )}
+          </>
+        )}
+
+        {isAdmin && orderPendingDelete && (
+          <>
+            <div
+              className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm"
+              onClick={closeDeleteOrderModal}
+            />
+            <div className="fixed inset-0 z-[210] flex items-center justify-center p-4">
+              <div className="w-full max-w-md rounded-2xl border border-black/10 bg-[var(--color-primary)] shadow-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-black/10">
+                  <div className="flex items-center gap-2">
+                    <Trash2 size={18} className="text-red-700" />
+                    <h3 className="text-black font-extrabold">
+                      Eliminar pedido
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeDeleteOrderModal}
+                    disabled={
+                      deletingOrderKey === getOrderKey(orderPendingDelete)
+                    }
+                    className="h-9 w-9 rounded-full border border-black/10 bg-white/70 text-black/70 hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Cerrar"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="px-5 py-5 space-y-4">
+                  <div className="text-sm text-black/70">
+                    ¿Seguro que quieres eliminar este pedido? Esta acción no se
+                    puede deshacer.
+                  </div>
+
+                  <div className="bg-white/60 border border-black/10 rounded-xl p-4 text-sm">
+                    <div className="flex justify-between gap-4">
+                      <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Nº pedido
+                      </span>
+                      <span className="font-semibold text-black">
+                        {getOrderPrintId(orderPendingDelete)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4 mt-2">
+                      <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Cliente
+                      </span>
+                      <span className="font-semibold text-black text-right">
+                        {orderPendingDelete.customer?.name || "N/A"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4 mt-2">
+                      <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Comercial
+                      </span>
+                      <span className="font-semibold text-black text-right">
+                        {orderPendingDelete.agent || "N/A"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4 mt-2">
+                      <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Fecha
+                      </span>
+                      <span className="font-semibold text-black text-right">
+                        {formatDateTime(orderPendingDelete.date)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4 mt-2">
+                      <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Total
+                      </span>
+                      <span className="font-semibold text-black text-right">
+                        {formatMoney(orderPendingDelete.total)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {deleteModalError && (
+                    <div className="bg-red-600/10 border border-red-600/20 text-red-700 rounded-xl p-3 text-sm">
+                      {deleteModalError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={closeDeleteOrderModal}
+                      disabled={
+                        deletingOrderKey === getOrderKey(orderPendingDelete)
+                      }
+                      className="px-4 py-2 rounded-xl border border-black/15 text-black hover:bg-black/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteOrder(orderPendingDelete)}
+                      disabled={
+                        deletingOrderKey === getOrderKey(orderPendingDelete) ||
+                        (!orderPendingDelete.filename &&
+                          !orderPendingDelete.agent)
+                      }
+                      className="px-4 py-2 rounded-xl bg-red-600 text-white hover:brightness-95 transition-colors inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {deletingOrderKey === getOrderKey(orderPendingDelete) ? (
+                        <>
+                          <Loader2 className="animate-spin" size={16} />
+                          Eliminando...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 size={16} />
+                          Eliminar
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </>
         )}
 
