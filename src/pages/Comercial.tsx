@@ -22,7 +22,9 @@ import {
   Loader2,
   Eye,
   EyeOff,
+  Pencil,
   Printer,
+  UserPlus,
 } from "lucide-react";
 import ComercialHeader from "../components/comercialHeader";
 
@@ -55,6 +57,8 @@ interface Order {
   }[];
   filename?: string;
 }
+
+type OrderProduct = Order["products"][number];
 
 interface MonthSummaryPrint {
   monthKey: string;
@@ -93,13 +97,23 @@ const Comercial: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [createComercialUsername, setCreateComercialUsername] = useState("");
+  const [createComercialPassword, setCreateComercialPassword] = useState("");
+  const [createComercialFullName, setCreateComercialFullName] = useState("");
+  const [createComercialEmail, setCreateComercialEmail] = useState("");
+  const [createComercialIsAdmin, setCreateComercialIsAdmin] = useState(false);
+  const [createComercialShowPassword, setCreateComercialShowPassword] =
+    useState(false);
+  const [createComercialError, setCreateComercialError] = useState("");
+  const [createComercialSuccess, setCreateComercialSuccess] = useState("");
+  const [isCreatingComercial, setIsCreatingComercial] = useState(false);
   const [discountPercent, setDiscountPercent] = useState("");
   const [error, setError] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [quantities, setQuantities] = useState<{ [key: number]: number }>({});
   const [showOrderSummary, setShowOrderSummary] = useState(false);
   const [view, setView] = useState<
-    "products" | "orders" | "checkout" | "confirmed"
+    "products" | "orders" | "checkout" | "confirmed" | "create_comercial"
   >("products");
   const [customerData, setCustomerData] = useState<CustomerData>({
     name: "",
@@ -120,6 +134,24 @@ const Comercial: React.FC = () => {
     null,
   );
   const [deleteModalError, setDeleteModalError] = useState("");
+  const [editingOrderKey, setEditingOrderKey] = useState<string | null>(null);
+  const [orderPendingEdit, setOrderPendingEdit] = useState<Order | null>(null);
+  const [editModalError, setEditModalError] = useState("");
+  const [editCustomerData, setEditCustomerData] = useState<CustomerData>({
+    name: "",
+    email: "",
+    phone: "",
+    address: "",
+    notes: "",
+    company: "",
+    cif: "",
+    callPreference: "",
+    accountNumber: "",
+  });
+  const [editProducts, setEditProducts] = useState<OrderProduct[]>([]);
+  const [activeProductRowIndex, setActiveProductRowIndex] = useState<
+    number | null
+  >(null);
   const [expandedOrders, setExpandedOrders] = useState<{
     [key: string]: boolean;
   }>({});
@@ -888,6 +920,179 @@ const Comercial: React.FC = () => {
     [getOrderKey, isAdmin],
   );
 
+  const openEditOrderModal = useCallback((order: Order) => {
+    if (!order.filename && !order.agent) {
+      setEditModalError(
+        "No se puede editar este pedido (falta el comercial/archivo asociado).",
+      );
+      setOrderPendingEdit(order);
+      return;
+    }
+
+    setEditModalError("");
+    setOrderPendingEdit(order);
+    setEditCustomerData({
+      name: order.customer?.name || "",
+      email: order.customer?.email || "",
+      phone: order.customer?.phone || "",
+      address: order.customer?.address || "",
+      notes: order.customer?.notes || "",
+      company: order.customer?.company || "",
+      cif: order.customer?.cif || "",
+      callPreference: order.customer?.callPreference || "",
+      accountNumber: order.customer?.accountNumber || "",
+    });
+    setEditProducts(
+      (order.products || []).map((p) => {
+        const quantity = Number(p.quantity) || 0;
+        const price = Number(p.price) || 0;
+        return {
+          id: Number(p.id) || 0,
+          name: String(p.name || ""),
+          quantity,
+          price,
+          total: price * quantity,
+        };
+      }),
+    );
+  }, []);
+
+  const closeEditOrderModal = useCallback(() => {
+    if (editingOrderKey) return;
+    setEditModalError("");
+    setOrderPendingEdit(null);
+    setEditProducts([]);
+    setActiveProductRowIndex(null);
+  }, [editingOrderKey]);
+
+  const editOrderTotals = useMemo(() => {
+    const subtotal = editProducts.reduce((acc, p) => {
+      const qty = Number(p.quantity) || 0;
+      const price = Number(p.price) || 0;
+      return acc + qty * price;
+    }, 0);
+
+    const discountPercentValue =
+      typeof orderPendingEdit?.discount_percent === "number"
+        ? orderPendingEdit.discount_percent
+        : 0;
+    const discountAmountValueRaw =
+      typeof orderPendingEdit?.discount_amount === "number"
+        ? orderPendingEdit.discount_amount
+        : 0;
+
+    let discountAmount =
+      discountPercentValue > 0 ? (subtotal * discountPercentValue) / 100 : 0;
+    if (discountPercentValue <= 0 && discountAmountValueRaw > 0) {
+      discountAmount = discountAmountValueRaw;
+    }
+    if (!Number.isFinite(discountAmount) || discountAmount < 0)
+      discountAmount = 0;
+    if (discountAmount > subtotal) discountAmount = subtotal;
+
+    const total = subtotal - discountAmount;
+    return { subtotal, discountPercentValue, discountAmount, total };
+  }, [editProducts, orderPendingEdit]);
+
+  const handleEditOrder = useCallback(async () => {
+    if (!orderPendingEdit) return;
+    const order = orderPendingEdit;
+    const orderKey = getOrderKey(order);
+    const orderIdentityKey = [
+      order.date || "",
+      order.agent || "",
+      order.customer?.email || "",
+      order.customer?.phone || "",
+      String(order.total ?? ""),
+    ].join("|");
+
+    setEditingOrderKey(orderKey);
+    setEditModalError("");
+
+    const hasInvalidSelection = editProducts.some(
+      (p) => String(p.name || "").trim() !== "" && Number(p.id) <= 0,
+    );
+    if (hasInvalidSelection) {
+      setEditModalError("Selecciona un producto del listado para cada línea.");
+      setEditingOrderKey(null);
+      return;
+    }
+
+    const normalizedProducts = editProducts
+      .map((p) => {
+        const name = String(p.name || "").trim();
+        const quantity = Number(p.quantity) || 0;
+        const price = Number(p.price) || 0;
+        return {
+          id: Number(p.id) || 0,
+          name,
+          quantity: quantity < 0 ? 0 : quantity,
+          price: price < 0 ? 0 : price,
+          total: (quantity < 0 ? 0 : quantity) * (price < 0 ? 0 : price),
+        };
+      })
+      .filter((p) => p.id > 0 && p.name !== "" && p.quantity > 0);
+
+    if (normalizedProducts.length === 0) {
+      setEditModalError("Añade al menos un producto válido del catálogo.");
+      setEditingOrderKey(null);
+      return;
+    }
+
+    try {
+      const response = await fetch("/backend/edit_order.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: order.filename,
+          agent: order.agent,
+          order_key: orderIdentityKey,
+          updated_order: {
+            ...order,
+            customer: editCustomerData,
+            products: normalizedProducts,
+            subtotal: editOrderTotals.subtotal,
+            discount_percent: editOrderTotals.discountPercentValue,
+            discount_amount: editOrderTotals.discountAmount,
+            total: editOrderTotals.total,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        let msg = "No se pudo editar el pedido.";
+        try {
+          const data = (await response.json()) as {
+            error?: string;
+            message?: string;
+          };
+          if (data?.error) msg = data.error;
+          else if (data?.message) msg = data.message;
+        } catch {
+          void 0;
+        }
+        setEditModalError(msg);
+        return;
+      }
+
+      await fetchOrders();
+      setOrderPendingEdit(null);
+      setEditModalError("");
+    } catch (err) {
+      console.error("Error editing order:", err);
+      setEditModalError("Error de conexión al intentar editar el pedido.");
+    } finally {
+      setEditingOrderKey(null);
+    }
+  }, [
+    editCustomerData,
+    editOrderTotals,
+    editProducts,
+    fetchOrders,
+    getOrderKey,
+    orderPendingEdit,
+  ]);
+
   useEffect(() => {
     if (view === "orders" && isLoggedIn) {
       fetchOrders();
@@ -989,6 +1194,98 @@ const Comercial: React.FC = () => {
 
     setError("Usuario o contraseña incorrectos");
   };
+
+  useEffect(() => {
+    if (view !== "create_comercial") return;
+    if (isAdmin) return;
+    setView("products");
+  }, [view, isAdmin]);
+
+  const resetCreateComercialForm = useCallback(() => {
+    setCreateComercialUsername("");
+    setCreateComercialPassword("");
+    setCreateComercialFullName("");
+    setCreateComercialEmail("");
+    setCreateComercialIsAdmin(false);
+    setCreateComercialShowPassword(false);
+  }, []);
+
+  const handleCreateComercial = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!isAdmin) {
+        setCreateComercialError("No autorizado.");
+        setCreateComercialSuccess("");
+        return;
+      }
+
+      const usernameValue = createComercialUsername.trim();
+      const passwordValue = createComercialPassword;
+      const fullNameValue = createComercialFullName.trim();
+      const emailValue = createComercialEmail.trim();
+
+      if (!usernameValue || !passwordValue) {
+        setCreateComercialError("Usuario y contraseña son obligatorios.");
+        setCreateComercialSuccess("");
+        return;
+      }
+
+      setIsCreatingComercial(true);
+      setCreateComercialError("");
+      setCreateComercialSuccess("");
+
+      try {
+        const response = await fetch("/backend/create_comercial.php", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: usernameValue,
+            password: passwordValue,
+            full_name: fullNameValue || undefined,
+            email: emailValue || undefined,
+            is_admin: createComercialIsAdmin ? 1 : 0,
+          }),
+        });
+
+        const data = (await response.json().catch(() => null)) as
+          | { success: true; message?: string }
+          | { success: false; message?: string; error?: string }
+          | null;
+
+        if (response.ok && data && "success" in data && data.success) {
+          setCreateComercialSuccess(
+            data.message || "Agente comercial creado correctamente.",
+          );
+          resetCreateComercialForm();
+          return;
+        }
+
+        const message =
+          (data && "message" in data && data.message) ||
+          (data && "error" in data && data.error) ||
+          "Error al crear el agente comercial.";
+        setCreateComercialError(message);
+        return;
+      } catch (err) {
+        console.error("Error creando comercial:", err);
+        setCreateComercialError(
+          "Error de conexión al crear el agente comercial.",
+        );
+        return;
+      } finally {
+        setIsCreatingComercial(false);
+      }
+    },
+    [
+      createComercialEmail,
+      createComercialFullName,
+      createComercialIsAdmin,
+      createComercialPassword,
+      createComercialUsername,
+      isAdmin,
+      resetCreateComercialForm,
+    ],
+  );
 
   const handleQuantityChange = (id: number, qty: number) => {
     if (qty < 0) return;
@@ -1663,6 +1960,11 @@ const Comercial: React.FC = () => {
           }}
           onOrdersClick={() => setView("orders")}
           isAdmin={isAdmin}
+          onCreateComercialClick={() => {
+            setCreateComercialError("");
+            setCreateComercialSuccess("");
+            setView("create_comercial");
+          }}
           onMakeOrderClick={() => setView("products")}
         />
         <main className="flex-grow pt-28 pb-32 px-4 container mx-auto max-w-7xl">
@@ -2039,6 +2341,25 @@ const Comercial: React.FC = () => {
                               </div>
 
                               <div className="mt-4 flex justify-end gap-2 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditOrderModal(order)}
+                                  disabled={
+                                    editingOrderKey === orderKey ||
+                                    (!order.filename && !order.agent)
+                                  }
+                                  title={
+                                    !order.filename && !order.agent
+                                      ? "No se puede editar este pedido (falta comercial/archivo asociado)"
+                                      : "Editar pedido"
+                                  }
+                                  className="text-xs md:text-sm px-4 py-2 rounded-lg border border-black/15 text-black hover:bg-black/5 transition-colors inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <Pencil size={16} />
+                                  {editingOrderKey === orderKey
+                                    ? "Guardando..."
+                                    : "Editar"}
+                                </button>
                                 {isAdmin && (
                                   <button
                                     type="button"
@@ -2261,6 +2582,154 @@ const Comercial: React.FC = () => {
                   </div>
                 </div>
               )}
+            </div>
+          ) : view === "create_comercial" ? (
+            <div className="max-w-xl mx-auto">
+              <button
+                type="button"
+                onClick={() => setView("orders")}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-black/15 text-black hover:border-[var(--color-secondary)] hover:text-[var(--color-secondary)] transition-colors mb-6"
+              >
+                <ArrowLeft size={18} /> Volver
+              </button>
+
+              <div className="bg-[var(--color-primary)] border border-black/10 rounded-2xl p-6 shadow-2xl">
+                <div className="mb-6">
+                  <h2 className="text-2xl font-extrabold text-black tracking-tight">
+                    Crear Comercial
+                  </h2>
+                  <p className="text-sm text-black/60 mt-1">
+                    Crea un nuevo usuario para el panel comercial.
+                  </p>
+                </div>
+
+                <form onSubmit={handleCreateComercial} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-[var(--color-secondary)] uppercase tracking-wider mb-2">
+                      Usuario *
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black placeholder-black/40 focus:outline-none focus:border-[var(--color-secondary)] focus:ring-1 focus:ring-[var(--color-secondary)] transition-all"
+                      value={createComercialUsername}
+                      onChange={(e) =>
+                        setCreateComercialUsername(e.target.value)
+                      }
+                      placeholder="usuario"
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[var(--color-secondary)] uppercase tracking-wider mb-2">
+                      Contraseña *
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={createComercialShowPassword ? "text" : "password"}
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 pr-11 text-black placeholder-black/40 focus:outline-none focus:border-[var(--color-secondary)] focus:ring-1 focus:ring-[var(--color-secondary)] transition-all"
+                        value={createComercialPassword}
+                        onChange={(e) =>
+                          setCreateComercialPassword(e.target.value)
+                        }
+                        placeholder="••••••••"
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        className="absolute inset-y-0 right-0 flex items-center pr-3 text-black/40 hover:text-black/70"
+                        onClick={() =>
+                          setCreateComercialShowPassword((v) => !v)
+                        }
+                        aria-label={
+                          createComercialShowPassword
+                            ? "Ocultar contraseña"
+                            : "Mostrar contraseña"
+                        }
+                      >
+                        {createComercialShowPassword ? (
+                          <EyeOff size={18} />
+                        ) : (
+                          <Eye size={18} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[var(--color-secondary)] uppercase tracking-wider mb-2">
+                      Nombre completo (opcional)
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black placeholder-black/40 focus:outline-none focus:border-[var(--color-secondary)] focus:ring-1 focus:ring-[var(--color-secondary)] transition-all"
+                      value={createComercialFullName}
+                      onChange={(e) =>
+                        setCreateComercialFullName(e.target.value)
+                      }
+                      placeholder="Nombre Apellido"
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[var(--color-secondary)] uppercase tracking-wider mb-2">
+                      Email (opcional)
+                    </label>
+                    <input
+                      type="email"
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black placeholder-black/40 focus:outline-none focus:border-[var(--color-secondary)] focus:ring-1 focus:ring-[var(--color-secondary)] transition-all"
+                      value={createComercialEmail}
+                      onChange={(e) => setCreateComercialEmail(e.target.value)}
+                      placeholder="comercial@empresa.com"
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-3 select-none">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-[var(--color-secondary)]"
+                      checked={createComercialIsAdmin}
+                      onChange={(e) =>
+                        setCreateComercialIsAdmin(e.target.checked)
+                      }
+                    />
+                    <span className="text-sm text-black/80">
+                      Dar permisos de admin
+                    </span>
+                  </label>
+
+                  {createComercialError && (
+                    <div className="bg-red-900/30 border border-red-800 text-red-300 px-4 py-3 rounded-lg text-sm flex items-center">
+                      <span className="mr-2">⚠️</span> {createComercialError}
+                    </div>
+                  )}
+
+                  {createComercialSuccess && (
+                    <div className="bg-green-900/20 border border-green-800/60 text-green-200 px-4 py-3 rounded-lg text-sm flex items-center">
+                      <span className="mr-2">✅</span> {createComercialSuccess}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={
+                      !createComercialUsername.trim() ||
+                      !createComercialPassword ||
+                      isCreatingComercial
+                    }
+                    className="w-full bg-[var(--color-secondary)] hover:brightness-90 text-white font-bold py-4 rounded-lg transition-all transform hover:scale-[1.02] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isCreatingComercial ? (
+                      <Loader2 className="animate-spin" size={20} />
+                    ) : (
+                      <UserPlus size={20} />
+                    )}
+                    {isCreatingComercial ? "CREANDO..." : "CREAR COMERCIAL"}
+                  </button>
+                </form>
+              </div>
             </div>
           ) : view === "checkout" ? (
             <div className="max-w-4xl mx-auto">
@@ -2791,6 +3260,513 @@ const Comercial: React.FC = () => {
                 onClick={() => setShowOrderSummary(false)}
               />
             )}
+          </>
+        )}
+
+        {orderPendingEdit && (
+          <>
+            <div
+              className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm"
+              onClick={closeEditOrderModal}
+            />
+            <div className="fixed inset-0 z-[210] flex items-center justify-center p-4">
+              <div className="w-full max-w-2xl rounded-2xl border border-black/10 bg-[var(--color-primary)] shadow-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-black/10">
+                  <div className="flex items-center gap-2">
+                    <Pencil
+                      size={18}
+                      className="text-[var(--color-secondary)]"
+                    />
+                    <h3 className="text-black font-extrabold">Editar pedido</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeEditOrderModal}
+                    disabled={editingOrderKey === getOrderKey(orderPendingEdit)}
+                    className="h-9 w-9 rounded-full border border-black/10 bg-white/70 text-black/70 hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Cerrar"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void handleEditOrder();
+                  }}
+                  className="px-5 py-5 space-y-4 max-h-[80vh] overflow-y-auto"
+                >
+                  <div className="bg-white/60 border border-black/10 rounded-xl p-4 text-sm">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="flex justify-between gap-4">
+                        <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                          Nº pedido
+                        </span>
+                        <span className="font-semibold text-black text-right">
+                          {getOrderPrintId(orderPendingEdit)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                          Fecha
+                        </span>
+                        <span className="font-semibold text-black text-right">
+                          {formatDateTime(orderPendingEdit.date)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                          Comercial
+                        </span>
+                        <span className="font-semibold text-black text-right">
+                          {orderPendingEdit.agent || "N/A"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                          Total
+                        </span>
+                        <span className="font-semibold text-black text-right">
+                          {formatMoney(editOrderTotals.total)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        Nombre *
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                        value={editCustomerData.name}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            name: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        Teléfono *
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                        value={editCustomerData.phone}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            phone: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                        value={editCustomerData.email}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            email: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        Empresa
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                        value={editCustomerData.company || ""}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            company: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        CIF
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors uppercase"
+                        value={editCustomerData.cif || ""}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            cif: e.target.value.toUpperCase(),
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                        Preferencia de llamada
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                        value={editCustomerData.callPreference || ""}
+                        onChange={(e) =>
+                          setEditCustomerData((prev) => ({
+                            ...prev,
+                            callPreference: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                      Cuenta corriente
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors uppercase"
+                      value={editCustomerData.accountNumber || ""}
+                      onChange={(e) =>
+                        setEditCustomerData((prev) => ({
+                          ...prev,
+                          accountNumber: e.target.value.toUpperCase(),
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                      Dirección *
+                    </label>
+                    <textarea
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors resize-none h-24"
+                      value={editCustomerData.address}
+                      onChange={(e) =>
+                        setEditCustomerData((prev) => ({
+                          ...prev,
+                          address: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-black/60 uppercase tracking-wider mb-2">
+                      Notas
+                    </label>
+                    <textarea
+                      className="w-full bg-white border border-black/15 rounded-lg px-4 py-3 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors resize-none h-24"
+                      value={editCustomerData.notes}
+                      onChange={(e) =>
+                        setEditCustomerData((prev) => ({
+                          ...prev,
+                          notes: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="bg-white/60 border border-black/10 rounded-xl p-4">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="text-xs font-bold text-black/60 uppercase tracking-wider">
+                        Productos
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditProducts((prev) => [
+                            ...prev,
+                            {
+                              id: 0,
+                              name: "",
+                              quantity: 1,
+                              price: 0,
+                              total: 0,
+                            },
+                          ])
+                        }
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-black/15 text-black hover:bg-black/5 transition-colors text-xs font-semibold"
+                      >
+                        <Plus size={16} />
+                        Añadir
+                      </button>
+                    </div>
+
+                    {editProducts.length === 0 ? (
+                      <div className="text-sm text-black/60">
+                        No hay productos en este pedido.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {editProducts.map((p, idx) => {
+                          const lineTotal =
+                            (Number(p.quantity) || 0) * (Number(p.price) || 0);
+                          const query = String(p.name || "");
+                          const normalizedQuery = normalizeSearchText(query);
+                          const suggestions = commercialProducts
+                            .filter((cp) => {
+                              if (!normalizedQuery) return true;
+                              return normalizeSearchText(cp.name.es).includes(
+                                normalizedQuery,
+                              );
+                            })
+                            .slice(0, 8);
+                          const showSuggestions =
+                            activeProductRowIndex === idx &&
+                            suggestions.length > 0;
+                          return (
+                            <div
+                              key={`${p.id}-${idx}`}
+                              className="grid grid-cols-12 gap-2 items-end"
+                            >
+                              <div className="col-span-12 md:col-span-6 relative">
+                                <input
+                                  type="text"
+                                  className="w-full bg-white border border-black/15 rounded-lg px-3 py-2 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                                  value={p.name}
+                                  onFocus={() => setActiveProductRowIndex(idx)}
+                                  onBlur={() => {
+                                    window.setTimeout(() => {
+                                      setActiveProductRowIndex((cur) =>
+                                        cur === idx ? null : cur,
+                                      );
+                                    }, 150);
+                                  }}
+                                  onChange={(e) =>
+                                    setEditProducts((prev) => {
+                                      const next = [...prev];
+                                      const qty =
+                                        Number(next[idx]?.quantity) || 0;
+                                      next[idx] = {
+                                        ...next[idx],
+                                        id: 0,
+                                        name: e.target.value,
+                                        price: 0,
+                                        total: qty * 0,
+                                      };
+                                      return next;
+                                    })
+                                  }
+                                  placeholder="Busca un producto..."
+                                />
+                                {showSuggestions && (
+                                  <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[260] bg-white border border-black/10 rounded-xl shadow-2xl overflow-hidden">
+                                    {suggestions.map((cp) => {
+                                      const unitPrice = getEffectivePrice(cp);
+                                      return (
+                                        <button
+                                          key={cp.id}
+                                          type="button"
+                                          onMouseDown={(e) =>
+                                            e.preventDefault()
+                                          }
+                                          onClick={() => {
+                                            setEditProducts((prev) => {
+                                              const next = [...prev];
+                                              const qty =
+                                                Number(next[idx]?.quantity) ||
+                                                0;
+                                              next[idx] = {
+                                                ...next[idx],
+                                                id: cp.id,
+                                                name: cp.name.es,
+                                                price: unitPrice,
+                                                total: unitPrice * qty,
+                                              };
+                                              return next;
+                                            });
+                                            setActiveProductRowIndex(null);
+                                          }}
+                                          className="w-full text-left px-4 py-3 hover:bg-black/5 transition-colors"
+                                        >
+                                          <div className="text-sm font-semibold text-black">
+                                            {cp.name.es}
+                                          </div>
+                                          <div className="text-xs text-black/60">
+                                            ID: {cp.id} ·{" "}
+                                            {Number(unitPrice).toFixed(2)} €
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {p.id === 0 &&
+                                  String(p.name || "").trim() !== "" && (
+                                    <div className="text-[11px] text-red-700 mt-1">
+                                      Selecciona un producto del listado
+                                    </div>
+                                  )}
+                              </div>
+                              <div className="col-span-4 md:col-span-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  className="w-full bg-white border border-black/15 rounded-lg px-3 py-2 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                                  value={p.quantity}
+                                  onChange={(e) =>
+                                    setEditProducts((prev) => {
+                                      const next = [...prev];
+                                      const raw = parseInt(e.target.value, 10);
+                                      const qty = Number.isNaN(raw) ? 0 : raw;
+                                      const price =
+                                        Number(next[idx]?.price) || 0;
+                                      next[idx] = {
+                                        ...next[idx],
+                                        quantity: qty,
+                                        total: qty * price,
+                                      };
+                                      return next;
+                                    })
+                                  }
+                                  placeholder="Cant."
+                                />
+                              </div>
+                              <div className="col-span-4 md:col-span-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  className="w-full bg-white border border-black/15 rounded-lg px-3 py-2 text-black focus:outline-none focus:border-[var(--color-secondary)] transition-colors"
+                                  value={p.price}
+                                  onChange={(e) =>
+                                    setEditProducts((prev) => {
+                                      const next = [...prev];
+                                      const raw = parseFloat(
+                                        e.target.value.replace(",", "."),
+                                      );
+                                      const price = Number.isNaN(raw) ? 0 : raw;
+                                      const qty =
+                                        Number(next[idx]?.quantity) || 0;
+                                      next[idx] = {
+                                        ...next[idx],
+                                        price,
+                                        total: qty * price,
+                                      };
+                                      return next;
+                                    })
+                                  }
+                                  placeholder="Precio"
+                                />
+                              </div>
+                              <div className="col-span-3 md:col-span-1 text-right text-sm font-bold text-[var(--color-secondary)] pb-2">
+                                {Number.isFinite(lineTotal)
+                                  ? `${lineTotal.toFixed(2)} €`
+                                  : "0.00 €"}
+                              </div>
+                              <div className="col-span-1 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditProducts((prev) =>
+                                      prev.filter((_, i) => i !== idx),
+                                    )
+                                  }
+                                  className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-red-600/30 text-red-700 hover:bg-red-600/10 transition-colors"
+                                  aria-label="Eliminar producto"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white/60 border border-black/10 rounded-xl p-4 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-black/70">Subtotal</span>
+                      <span className="font-semibold text-black">
+                        {formatMoney(editOrderTotals.subtotal)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-black/70">Descuento</span>
+                      <span className="font-semibold text-black">
+                        {editOrderTotals.discountPercentValue > 0
+                          ? `${editOrderTotals.discountPercentValue.toFixed(
+                              0,
+                            )}% (-${formatMoney(editOrderTotals.discountAmount)})`
+                          : editOrderTotals.discountAmount > 0
+                            ? `-${formatMoney(editOrderTotals.discountAmount)}`
+                            : "0.00 €"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mt-2 text-base">
+                      <span className="font-extrabold text-black">Total</span>
+                      <span className="font-extrabold text-[var(--color-secondary)]">
+                        {formatMoney(editOrderTotals.total)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {editModalError && (
+                    <div className="bg-red-600/10 border border-red-600/20 text-red-700 rounded-xl p-3 text-sm">
+                      {editModalError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={closeEditOrderModal}
+                      disabled={
+                        editingOrderKey === getOrderKey(orderPendingEdit)
+                      }
+                      className="px-4 py-2 rounded-xl border border-black/15 text-black hover:bg-black/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={
+                        editingOrderKey === getOrderKey(orderPendingEdit) ||
+                        !editCustomerData.name.trim() ||
+                        !editCustomerData.phone.trim() ||
+                        !editCustomerData.address.trim() ||
+                        !editProducts.some(
+                          (p) =>
+                            Number(p.id) > 0 &&
+                            String(p.name || "").trim() !== "" &&
+                            (Number(p.quantity) || 0) > 0,
+                        )
+                      }
+                      className="px-4 py-2 rounded-xl bg-[var(--color-secondary)] text-white hover:brightness-95 transition-colors inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {editingOrderKey === getOrderKey(orderPendingEdit) ? (
+                        <>
+                          <Loader2 className="animate-spin" size={16} />
+                          Guardando...
+                        </>
+                      ) : (
+                        <>
+                          <Check size={16} />
+                          Guardar
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
           </>
         )}
 

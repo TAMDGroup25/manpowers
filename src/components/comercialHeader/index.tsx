@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Menu, X, LogOut, History } from "lucide-react";
+import { Menu, X, LogOut, History, UserPlus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 interface ComercialHeaderProps {
@@ -7,6 +7,7 @@ interface ComercialHeaderProps {
   onOrdersClick: () => void;
   isAdmin?: boolean;
   onMakeOrderClick?: () => void;
+  onCreateComercialClick?: () => void;
 }
 
 const ComercialHeader: React.FC<ComercialHeaderProps> = ({
@@ -14,6 +15,7 @@ const ComercialHeader: React.FC<ComercialHeaderProps> = ({
   onOrdersClick,
   isAdmin,
   onMakeOrderClick,
+  onCreateComercialClick,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const navigate = useNavigate();
@@ -63,6 +65,16 @@ const ComercialHeader: React.FC<ComercialHeaderProps> = ({
             <span>Pedidos Anteriores</span>
           </button>
 
+          {isAdmin && onCreateComercialClick && (
+            <button
+              onClick={onCreateComercialClick}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white text-black hover:bg-black/5 transition-all border border-black/15"
+            >
+              <UserPlus size={18} />
+              <span>Crear Comercial</span>
+            </button>
+          )}
+
           {isAdmin && onMakeOrderClick && (
             <button
               onClick={onMakeOrderClick}
@@ -98,6 +110,19 @@ const ComercialHeader: React.FC<ComercialHeaderProps> = ({
             <History size={20} />
             <span className="font-medium">Pedidos Anteriores</span>
           </button>
+
+          {isAdmin && onCreateComercialClick && (
+            <button
+              onClick={() => {
+                onCreateComercialClick();
+                setIsMenuOpen(false);
+              }}
+              className="flex items-center gap-3 px-4 py-4 rounded-lg bg-white text-black active:bg-black/5 border border-black/15"
+            >
+              <UserPlus size={20} />
+              <span className="font-medium">Crear Comercial</span>
+            </button>
+          )}
 
           {isAdmin && onMakeOrderClick && (
             <button
